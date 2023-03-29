@@ -415,6 +415,10 @@ void MCObjectFileInfo::initELFMCObjectFileInfo(const Triple &T, bool Large) {
       Ctx->getELFSection(".rodata.cst32", ELF::SHT_PROGBITS,
                          ELF::SHF_ALLOC | ELF::SHF_MERGE, 32);
 
+  IntrospectionDataSection =
+    Ctx->getELFSection(".isdata", ELF::SHT_PROGBITS,
+                        ELF::SHF_ALLOC);
+
   // Exception Handling Sections.
 
   // FIXME: We're emitting LSDA info into a readonly section on ELF, even though
