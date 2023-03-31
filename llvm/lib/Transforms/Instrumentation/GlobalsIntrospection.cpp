@@ -16,6 +16,11 @@ struct GlobalsIntrospectionPass : public ModulePass {
   bool runOnModule(Module &M) override {
     errs() << "Hello: ";
     errs().write_escaped(M.getName()) << '\n';
+
+    for (auto &global : M.getGlobalList()) {
+        errs().write_escaped(global.getName()) << '\n';
+    }
+
     return false;
   }
 };
