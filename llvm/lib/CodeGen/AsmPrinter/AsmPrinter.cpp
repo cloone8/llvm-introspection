@@ -2140,12 +2140,6 @@ bool AsmPrinter::doFinalization(Module &M) {
     }
   }
 
-  // Emit introspection data section
-  MCSection *introspectionDataSection = OutContext.getObjectFileInfo()->getIntrospectionDataSection();
-  OutStreamer->switchSection(introspectionDataSection);
-  const char* testbytes = "Welcome to the introspection data section!";
-  OutStreamer->emitBytes(StringRef(testbytes));
-
   // Emit symbol partition specifications (ELF only).
   if (TM.getTargetTriple().isOSBinFormatELF()) {
     unsigned UniqueID = 0;

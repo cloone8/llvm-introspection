@@ -186,9 +186,6 @@ protected:
   MCSection *MergeableConst16Section = nullptr;
   MCSection *MergeableConst32Section = nullptr;
 
-  // Introspection enabling sections
-  MCSection *IntrospectionDataSection = nullptr;
-
   // MachO specific sections.
 
   /// Section for thread local structure information.
@@ -379,11 +376,6 @@ public:
   }
   const MCSection *getMergeableConst32Section() const {
     return MergeableConst32Section;
-  }
-
-  // Introspection enabling sections
-  MCSection *getIntrospectionDataSection() const {
-    return IntrospectionDataSection;
   }
 
   // MachO specific sections.
