@@ -95,6 +95,7 @@ void llvm::initializeInstrumentation(PassRegistry &Registry) {
   initializeModuleMemProfilerLegacyPassPass(Registry);
   initializeBoundsCheckingLegacyPassPass(Registry);
   initializeDataFlowSanitizerLegacyPassPass(Registry);
+  initializeGlobalsIntrospectionPassPass(Registry);
 }
 
 /// LLVMInitializeInstrumentation - C binding for
