@@ -1,5 +1,10 @@
 #include <stdlib.h>
 
+#ifdef __linux__
+    #include <fcntl.h>
+    #include <unistd.h>
+#endif
+
 struct __introspection_global_entry_t {
     char* name;
     size_t size;
@@ -27,3 +32,17 @@ struct __introspection_module_entry_t module = {
     .num_entries = 0,
     .entries = &entries
 };
+
+void __peekfs_module_registrator(const char* path, const void* hdr)  {
+#ifdef __linux__
+    int fd = open(path, O_WRONLY);
+
+    if(fd == -1) {
+        return;
+    }
+
+    write(fd, &hdr, sizeof(void*));
+
+    close(fd);
+#endif
+}
