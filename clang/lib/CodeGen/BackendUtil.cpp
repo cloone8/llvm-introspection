@@ -566,6 +566,8 @@ bool EmitAssemblyHelper::AddEmitPasses(legacy::PassManager &CodeGenPasses,
                                        BackendAction Action,
                                        raw_pwrite_stream &OS,
                                        raw_pwrite_stream *DwoOS) {
+  CodeGenPasses.add(createGlobalsIntrospectionPass());
+
   // Add LibraryInfo.
   std::unique_ptr<TargetLibraryInfoImpl> TLII(
       createTLII(TargetTriple, CodeGenOpts));
@@ -586,8 +588,6 @@ bool EmitAssemblyHelper::AddEmitPasses(legacy::PassManager &CodeGenPasses,
     Diags.Report(diag::err_fe_unable_to_interface_with_target);
     return false;
   }
-
-  CodeGenPasses.add(createGlobalsIntrospectionPass());
 
   return true;
 }
@@ -831,6 +831,8 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
   PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
   ModulePassManager MPM;
+
+  // MPM.addPass(createGlobalsIntrospectionPass());
 
   if (!CodeGenOpts.DisableLLVMPasses) {
     // Map our optimization levels into one of the distinct levels used to

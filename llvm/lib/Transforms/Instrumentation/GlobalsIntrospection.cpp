@@ -1,6 +1,9 @@
 #include "llvm/Transforms/Instrumentation/GlobalsIntrospection.h"
+#include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Pass.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/Support/raw_ostream.h"
@@ -40,6 +43,15 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     std::unique_ptr<Module> staticLib = getStaticLib(M.getContext(), staticLibPath);
 
+    Function* registratorFunction = copyRegistratorFunction(staticLib.get(), M);
+
+    if(registratorFunction == nullptr) {
+      WithColor::warning(errs()).resetColor() << "registrator function was not succesfully copied\n";
+      return true;
+    }
+
+    registratorFunction->setLinkage(GlobalValue::LinkageTypes::LinkOnceAnyLinkage);
+
     // Generate a random identifier for this module, to make sure that
     // modules with equal filenames but different paths don't give global variable
     // name clashes
@@ -51,12 +63,95 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     size_t numEntries;
     GlobalVariable* moduleEntries = createModuleEntries(M, modUniqueName, staticLib.get(), numEntries);
-    createModuleHeader(M, modUniqueName, staticLib.get(), moduleEntries, numEntries);
+    GlobalVariable* moduleHeader = createModuleHeader(M, modUniqueName, staticLib.get(), moduleEntries, numEntries);
 
-    return false;
+    GlobalVariable* registerFile = createStringConst(M, "register_file", PEEKFS_REGISTER_FILE);
+    GlobalVariable* unregisterFile = createStringConst(M, "unregister_file", PEEKFS_UNREGISTER_FILE);
+
+
+    Function* peekfsCtor = getPeekfsInitFunction(M, Twine("__peekfs_init.").concat(modUniqueName), registerFile, moduleHeader, registratorFunction);
+    Function* peekfsDtor = getPeekfsInitFunction(M, Twine("__peekfs_exit.").concat(modUniqueName), unregisterFile, moduleHeader, registratorFunction);
+    appendToGlobalCtors(M, peekfsCtor, 0);
+    appendToGlobalDtors(M, peekfsDtor, 0);
+    M.dump();
+
+    return true;
   }
 
   private:
+
+  Function* getPeekfsInitFunction(Module &M, Twine name, GlobalVariable* initFile, GlobalVariable* modHeader, Function* registratorFunction) {
+    Function* introspectionConstructor = Function::createWithDefaultAttr(
+      FunctionType::get(Type::getVoidTy(M.getContext()), false),
+      GlobalValue::LinkageTypes::ExternalLinkage,
+      M.getDataLayout().getProgramAddressSpace(),
+      name,
+      &M
+    );
+
+    introspectionConstructor->addFnAttr(Attribute::NoUnwind);
+    introspectionConstructor->addFnAttr(Attribute::OptimizeNone);
+    introspectionConstructor->addFnAttr(Attribute::NoInline);
+
+    IRBuilder<> *Builder = new IRBuilder<>(BasicBlock::Create(M.getContext(), "entry", introspectionConstructor));
+    std::vector<Value *> args;
+    args.push_back(initFile);
+    args.push_back(modHeader);
+
+    Builder->CreateCall(registratorFunction, args);
+    Builder->CreateRetVoid();
+
+    return introspectionConstructor;
+  }
+
+  Function* copyRegistratorFunction(Module* staticLib, Module &M) {
+    ValueToValueMapTy VMap;
+    std::vector<Function*> toCopy;
+
+    // First, copy all the declarations to the new module
+    for(auto &staticLibFunc : staticLib->getFunctionList()) {
+      toCopy.push_back(&staticLibFunc);
+
+      std::vector<Type *> argTypes;
+
+      for (const Argument &I : staticLibFunc.args()) {
+          argTypes.push_back(I.getType());
+      }
+
+      FunctionType *newFunctionType = FunctionType::get(
+          staticLibFunc.getFunctionType()->getReturnType(),
+          argTypes,
+          staticLibFunc.getFunctionType()->isVarArg()
+        );
+
+      Function *newFunction = Function::Create(
+          newFunctionType,
+          staticLibFunc.getLinkage(),
+          staticLibFunc.getAddressSpace(),
+          staticLibFunc.getName(),
+          &M
+        );
+
+      VMap[&staticLibFunc] = newFunction;
+    }
+
+    for(Function* oldFunc : toCopy) {
+      Value* newFuncVal = VMap[oldFunc];
+      Function* newFunc = static_cast<Function*>(newFuncVal);
+
+      Function::arg_iterator DestI = newFunc->arg_begin();
+      for (const Argument &I : oldFunc->args()) {
+        DestI->setName(I.getName()); // Copy the name over...
+        VMap[&I] = &*DestI++;        // Add mapping to VMap
+      }
+
+      SmallVector<ReturnInst *, 8> Returns; // Ignore returns cloned.
+      CloneFunctionInto(newFunc, oldFunc, VMap, CloneFunctionChangeType::DifferentModule,
+                        Returns);
+    }
+
+    return M.getFunction("__peekfs_module_registrator");
+  }
 
   /**
    * Returns the compiled static library module, from which the global introspection
@@ -95,8 +190,7 @@ struct GlobalsIntrospectionPass : public ModulePass {
     std::vector<Constant *> constantMap = std::vector<Constant *>();
 
     for(auto &global : M.getGlobalList()) {
-
-      if(global.getName().startswith(".str")) {
+      if(global.getName().startswith(".str") || global.getName().startswith("llvm.")) {
         continue;
       }
 
