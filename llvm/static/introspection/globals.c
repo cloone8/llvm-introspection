@@ -1,33 +1,40 @@
 #include <stdlib.h>
+#include <stdint.h>
 
 #ifdef __linux__
     #include <fcntl.h>
     #include <unistd.h>
 #endif
 
-struct __introspection_global_entry_t {
+struct isdata_entry {
+    uint16_t name_len;
     char* name;
-    size_t size;
-    int as_str;
+    uint64_t size;
+    uint32_t flags;
     void* addr;
 };
 
-struct __introspection_module_entry_t {
-    char magic[16];
+struct isdata_module {
+    uint8_t magic[16];
+    uint16_t version;
+    uint16_t name_len;
     char* name;
-    size_t num_entries;
-    struct __introspection_global_entry_t* entries;
+    uint64_t num_entries;
+    struct isdata_entry* entries;
 };
 
-struct __introspection_global_entry_t entries = {
+struct isdata_entry entries = {
+    .name_len = 0,
     .name = NULL,
     .size = 0,
-    .as_str = 0,
+    .flags = 0,
     .addr = NULL
 };
 
-struct __introspection_module_entry_t module = {
+struct isdata_module module = {
     .magic = {'_', 'I', 'S', 'D', 'A', 'T', 'A', '_', 'M', 'O', 'D', '_', 'H', 'D', 'R', '_'},
+    .version = 0,
+    .name_len = 0,
     .name = NULL,
     .num_entries = 0,
     .entries = &entries

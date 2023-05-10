@@ -73,7 +73,6 @@ struct GlobalsIntrospectionPass : public ModulePass {
     Function* peekfsDtor = getPeekfsInitFunction(M, Twine("__peekfs_exit.").concat(modUniqueName), unregisterFile, moduleHeader, registratorFunction);
     appendToGlobalCtors(M, peekfsCtor, 0);
     appendToGlobalDtors(M, peekfsDtor, 0);
-    M.dump();
 
     return true;
   }
@@ -195,9 +194,10 @@ struct GlobalsIntrospectionPass : public ModulePass {
       }
 
       std::vector<Constant *> entryInitializers = {
+        ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, global.getName().size() + 1, false)),
         createStringConst(M, "__introspection_entry_name", global.getName()),
-        ConstantInt::get(Type::getIntNTy(M.getContext(), GET_TYPE_BITS(size_t)), APInt(GET_TYPE_BITS(size_t), M.getDataLayout().getTypeAllocSize(global.getType()), false)),
-        ConstantInt::get(Type::getIntNTy(M.getContext(), GET_TYPE_BITS(int)), APInt(GET_TYPE_BITS(int), 0, false)),
+        ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, M.getDataLayout().getTypeAllocSize(global.getType()), false)),
+        ConstantInt::get(Type::getInt32Ty(M.getContext()), APInt(32, 0, false)),
         &global
       };
 
@@ -273,12 +273,16 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     std::vector<Constant *> initializers = {
       magic_init,
+      ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, 0, false)),
+      ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, M.getName().size() + 1, false)),
       createStringConst(M, "__introspection_mod_name", M.getName()),
-      ConstantInt::get(Type::getIntNTy(M.getContext(), GET_TYPE_BITS(size_t)), APInt(GET_TYPE_BITS(size_t), numEntries, false)),
+      ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, numEntries, false)),
       moduleEntries,
     };
 
-    moduleEntry->setInitializer(ConstantStruct::get((StructType*)moduleEntry->getValueType(), ArrayRef<Constant*>(initializers)));
+    Constant* moduleInit = ConstantStruct::get((StructType*)moduleEntry->getValueType(), ArrayRef<Constant*>(initializers));
+
+    moduleEntry->setInitializer(moduleInit);
     moduleEntry->setSection(GLOBALS_INTROSPECTION_SECTION_NAME);
 
     return moduleEntry;
