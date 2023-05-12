@@ -195,12 +195,26 @@ struct GlobalsIntrospectionPass : public ModulePass {
       }
 
       uint32_t flags = 0;
+      uint64_t numElems = 1;
+      Type* elemType = global.getValueType();
+
+      if(elemType->isArrayTy()) {
+        numElems = elemType->getArrayNumElements();
+        elemType = elemType->getArrayElementType();
+      }
+
+      uint64_t size = M.getDataLayout().getTypeAllocSize(elemType).getFixedSize();
+
+      if(elemType->isPointerTy()) {
+        flags |= ISDATA_EFLAG_PTR;
+      }
 
       std::vector<Constant *> entryInitializers = {
         ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, global.getName().size() + 1, false)),
         createStringConst(M, "__introspection_entry_name", global.getName()),
-        ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, M.getDataLayout().getTypeAllocSize(global.getValueType()).getFixedSize(), false)),
         ConstantInt::get(Type::getInt32Ty(M.getContext()), APInt(32, flags, false)),
+        ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, size, false)),
+        ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, numElems, false)),
         &global
       };
 
