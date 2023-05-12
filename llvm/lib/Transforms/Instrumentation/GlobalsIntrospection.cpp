@@ -16,6 +16,7 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/IRReader/IRReader.h"
+#include "../../../static/introspection/isdata-headers/isdata_meta.h"
 
 #ifdef __linux__
   #include <unistd.h>
@@ -193,11 +194,13 @@ struct GlobalsIntrospectionPass : public ModulePass {
         continue;
       }
 
+      uint32_t flags = 0;
+
       std::vector<Constant *> entryInitializers = {
         ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, global.getName().size() + 1, false)),
         createStringConst(M, "__introspection_entry_name", global.getName()),
-        ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, M.getDataLayout().getTypeAllocSize(global.getType()), false)),
-        ConstantInt::get(Type::getInt32Ty(M.getContext()), APInt(32, 0, false)),
+        ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, M.getDataLayout().getTypeAllocSize(global.getValueType()).getFixedSize(), false)),
+        ConstantInt::get(Type::getInt32Ty(M.getContext()), APInt(32, flags, false)),
         &global
       };
 
@@ -266,14 +269,16 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     moduleEntry->setAlignment(MaybeAlign(staticLibModEntryVar->getAlignment()));
 
-    const std::string magic_bytes_str = "_ISDATA_MOD_HDR_";
-    const std::vector<char> magic_bytes(magic_bytes_str.begin(), magic_bytes_str.end());
+    DEFINE_ISDATA_MAGIC_BYTES(magic_bytes_raw);
+    const std::vector<uint8_t> magic_bytes_vec(magic_bytes_raw, magic_bytes_raw + ISDATA_MAGIC_BYTES_LEN);
 
-    Constant *magic_init = ConstantDataArray::get(M.getContext(), ArrayRef<char>(magic_bytes));
+    assert(magic_bytes_vec.size() == ISDATA_MAGIC_BYTES_LEN);
+
+    Constant *magic_init = ConstantDataArray::get(M.getContext(), ArrayRef<uint8_t>(magic_bytes_vec));
 
     std::vector<Constant *> initializers = {
       magic_init,
-      ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, 0, false)),
+      ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, ISDATA_VERSION, false)),
       ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, M.getName().size() + 1, false)),
       createStringConst(M, "__introspection_mod_name", M.getName()),
       ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, numEntries, false)),

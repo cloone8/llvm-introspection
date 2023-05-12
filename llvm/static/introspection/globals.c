@@ -1,27 +1,11 @@
 #include <stdlib.h>
-#include <stdint.h>
 
 #ifdef __linux__
     #include <fcntl.h>
     #include <unistd.h>
 #endif
 
-struct isdata_entry {
-    uint16_t name_len;
-    char* name;
-    uint64_t size;
-    uint32_t flags;
-    void* addr;
-};
-
-struct isdata_module {
-    uint8_t magic[16];
-    uint16_t version;
-    uint16_t name_len;
-    char* name;
-    uint64_t num_entries;
-    struct isdata_entry* entries;
-};
+#include "isdata-headers/isdata_meta.h"
 
 struct isdata_entry entries = {
     .name_len = 0,

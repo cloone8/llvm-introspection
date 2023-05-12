@@ -1,0 +1,3 @@
+[submodule "llvm/static/introspection/isdata-headers"]
+	path = llvm/static/introspection/isdata-headers
+	url = git@github.com:cloone8/isdata-headers.git
