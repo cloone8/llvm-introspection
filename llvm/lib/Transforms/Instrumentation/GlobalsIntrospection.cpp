@@ -1,9 +1,12 @@
+#include <unordered_map>
+
 #include "llvm/Transforms/Instrumentation/GlobalsIntrospection.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Pass.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/Support/raw_ostream.h"
@@ -44,15 +47,6 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     std::unique_ptr<Module> staticLib = getStaticLib(M.getContext(), staticLibPath);
 
-    Function* registratorFunction = copyRegistratorFunction(staticLib.get(), M);
-
-    if(registratorFunction == nullptr) {
-      WithColor::warning(errs()).resetColor() << "registrator function was not succesfully copied\n";
-      return true;
-    }
-
-    registratorFunction->setLinkage(GlobalValue::LinkageTypes::LinkOnceAnyLinkage);
-
     // Generate a random identifier for this module, to make sure that
     // modules with equal filenames but different paths don't give global variable
     // name clashes
@@ -64,6 +58,20 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     size_t numEntries;
     GlobalVariable* moduleEntries = createModuleEntries(M, modUniqueName, staticLib.get(), numEntries);
+
+    if(numEntries == 0) {
+      return false; // No globals to introspect!
+    }
+
+    Function* registratorFunction = copyRegistratorFunction(staticLib.get(), M);
+
+    if(registratorFunction == nullptr) {
+      WithColor::warning(errs()).resetColor() << "registrator function was not succesfully copied\n";
+      return true;
+    }
+
+    registratorFunction->setLinkage(GlobalValue::LinkageTypes::LinkOnceAnyLinkage);
+
     GlobalVariable* moduleHeader = createModuleHeader(M, modUniqueName, staticLib.get(), moduleEntries, numEntries);
 
     GlobalVariable* registerFile = createStringConst(M, "register_file", PEEKFS_REGISTER_FILE);
@@ -72,6 +80,7 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     Function* peekfsCtor = getPeekfsInitFunction(M, Twine("__peekfs_init.").concat(modUniqueName), registerFile, moduleHeader, registratorFunction);
     Function* peekfsDtor = getPeekfsInitFunction(M, Twine("__peekfs_exit.").concat(modUniqueName), unregisterFile, moduleHeader, registratorFunction);
+
     appendToGlobalCtors(M, peekfsCtor, 0);
     appendToGlobalDtors(M, peekfsDtor, 0);
 
@@ -177,6 +186,102 @@ struct GlobalsIntrospectionPass : public ModulePass {
     }
   }
 
+  GlobalVariable* getStructDefForType(Module &M, std::unordered_map<StructType*, GlobalVariable*> &structDefMap, StructType* structType, GlobalVariable* staticLibStructDef, GlobalVariable* staticLibStructField, Twine &modUniqueName) {
+    GlobalVariable* cachedStructDef = structDefMap[structType];
+
+    if(cachedStructDef) {
+      return cachedStructDef;
+    }
+
+    std::string structName;
+
+    if(!structType->isLiteral()) {
+      structName = structType->getName().str();
+    } else {
+      char structUniqueID[10] = {0};
+      getRandomAsciiIdentifier(structUniqueID, 10);
+      structName = std::string(structUniqueID, 10);
+    }
+
+    std::vector<Constant*> structFieldInitializers = std::vector<Constant *>();
+    uint64_t elementNum = 0;
+    for(Type* structElement : structType->elements()) {
+      Type* elemType = structElement;
+      Twine fieldDisplayName = Twine("field_").concat(Twine(elementNum++));
+      Twine fieldMetaName = Twine(structName).concat(Twine('.')).concat(fieldDisplayName);
+      uint8_t flags = 0;
+      uint64_t numElems = 1;
+      Constant* sizeOrDefInit;
+
+      if(structElement->isArrayTy()) {
+        numElems = structElement->getArrayNumElements();
+        elemType = structElement->getArrayElementType();
+      }
+
+      if(elemType->isStructTy()) {
+        flags |= ISDATA_SFFLAG_STRUCT;
+        sizeOrDefInit = ConstantExpr::getPtrToInt(getStructDefForType(M, structDefMap, (StructType*) elemType, staticLibStructDef, staticLibStructField, modUniqueName), Type::getInt64Ty(M.getContext()));
+      } else {
+        sizeOrDefInit = ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, M.getDataLayout().getTypeAllocSize(elemType).getFixedSize(), false));
+      }
+
+      std::vector<Constant *> isdataStructFieldFields = {
+        ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, fieldDisplayName.str().length() + 1, false)),
+        createStringConst(M, fieldMetaName.concat(Twine(".name")), fieldDisplayName.str()),
+        ConstantInt::get(Type::getInt8Ty(M.getContext()), APInt(8, flags, false)),
+        sizeOrDefInit,
+        ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, numElems, false)),
+      };
+
+      Constant* isdataStructField = ConstantStruct::get((StructType*)staticLibStructField->getValueType(), ArrayRef<Constant*>(isdataStructFieldFields));
+
+      structFieldInitializers.push_back(isdataStructField);
+    }
+
+    GlobalVariable* structFields = new GlobalVariable(M,
+        ArrayType::get(staticLibStructField->getValueType(), structFieldInitializers.size()),
+        true,
+        GlobalValue::LinkageTypes::ExternalLinkage,
+        nullptr,
+        Twine(structName).concat(Twine(".structfields.")).concat(modUniqueName)
+      );
+
+    structFields->setAlignment(MaybeAlign(staticLibStructField->getAlignment()));
+    structFields->setInitializer(ConstantArray::get((ArrayType*) structFields->getValueType(), structFieldInitializers));
+    structFields->setSection(GLOBALS_INTROSPECTION_SECTION_NAME);
+
+    GlobalVariable* structDef = new GlobalVariable(M,
+      staticLibStructDef->getValueType(),
+      true,
+      GlobalValue::LinkageTypes::ExternalLinkage,
+      nullptr,
+      Twine(structName).concat(Twine(".structdef.")).concat(modUniqueName)
+    );
+
+    structDef->setAlignment(MaybeAlign(staticLibStructDef->getAlignment()));
+    structDef->setSection(GLOBALS_INTROSPECTION_SECTION_NAME);
+
+    uint8_t flags = 0;
+
+    if(structType->isPacked()) {
+      flags |= ISDATA_SDFLAG_PACKED;
+    }
+
+    std::vector<Constant *> initializers = {
+      ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, structFieldInitializers.size(), false)),
+      structFields,
+      ConstantInt::get(Type::getInt8Ty(M.getContext()), APInt(8, flags, false))
+    };
+
+    Constant* structDefInit = ConstantStruct::get((StructType*)structDef->getValueType(), initializers);
+
+    structDef->setInitializer(structDefInit);
+
+
+    structDefMap[structType] = structDef;
+    return structDef;
+  }
+
   /**
    * Returns the constant initializers used to statically initialize each global introspection
    * entry for this module.
@@ -186,11 +291,20 @@ struct GlobalsIntrospectionPass : public ModulePass {
    *
    * @return A std::vector containing initializers for each global entry
    */
-  std::vector<Constant *> getGlobalEntryConstants(Module &M, GlobalVariable* staticLibEntry) {
+  std::vector<Constant *> getGlobalEntryConstants(Module &M, GlobalVariable* staticLibEntry, GlobalVariable* staticLibStructDef, GlobalVariable* staticLibStructField, Twine &modUniqueName) {
     std::vector<Constant *> constantMap = std::vector<Constant *>();
+    std::unordered_map<StructType*, GlobalVariable*> structDefMap = std::unordered_map<StructType*, GlobalVariable*>();
 
     for(auto &global : M.getGlobalList()) {
-      if(global.getName().startswith(".str") || global.getName().startswith("llvm.")) {
+      if(global.getName().startswith("llvm.")) {
+        continue;
+      }
+
+      if(global.getName().startswith(".str")) {
+        continue;
+      }
+
+      if(global.hasSection() && global.getSection().startswith(GLOBALS_INTROSPECTION_SECTION_NAME)) {
         continue;
       }
 
@@ -203,17 +317,24 @@ struct GlobalsIntrospectionPass : public ModulePass {
         elemType = elemType->getArrayElementType();
       }
 
-      uint64_t size = M.getDataLayout().getTypeAllocSize(elemType).getFixedSize();
-
       if(elemType->isPointerTy()) {
         flags |= ISDATA_EFLAG_PTR;
+      }
+
+      Constant* sizeOrDefInit;
+      if(elemType->isStructTy()) {
+        flags |= ISDATA_EFLAG_STRUCT;
+
+        sizeOrDefInit = ConstantExpr::getPtrToInt(getStructDefForType(M, structDefMap, (StructType*) elemType, staticLibStructDef, staticLibStructField, modUniqueName), Type::getInt64Ty(M.getContext()));
+      } else {
+        sizeOrDefInit = ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, M.getDataLayout().getTypeAllocSize(elemType).getFixedSize(), false));
       }
 
       std::vector<Constant *> entryInitializers = {
         ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, global.getName().size() + 1, false)),
         createStringConst(M, "__introspection_entry_name", global.getName()),
         ConstantInt::get(Type::getInt32Ty(M.getContext()), APInt(32, flags, false)),
-        ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, size, false)),
+        sizeOrDefInit,
         ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, numElems, false)),
         &global
       };
@@ -239,24 +360,29 @@ struct GlobalsIntrospectionPass : public ModulePass {
    */
   GlobalVariable *createModuleEntries(Module &M, Twine &modUniqueName, Module *staticLib, size_t &numEntries) {
     GlobalVariable* staticLibGlobalEntryVar = staticLib->getNamedGlobal("entries");
+    GlobalVariable* staticLibStructDefEntry = staticLib->getNamedGlobal("structdef");
+    GlobalVariable* staticLibStructFieldEntry = staticLib->getNamedGlobal("structfield");
 
-    std::vector<Constant *> entryConstants = getGlobalEntryConstants(M, staticLibGlobalEntryVar);
-
-    GlobalVariable* globalEntry = new GlobalVariable(M,
-      ArrayType::get(staticLibGlobalEntryVar->getValueType(), entryConstants.size()),
-      true,
-      GlobalValue::LinkageTypes::ExternalLinkage,
-      nullptr,
-      Twine("__introspection_mod_entries.").concat(modUniqueName)
-    );
-
-    globalEntry->setAlignment(MaybeAlign(staticLibGlobalEntryVar->getAlignment()));
-    globalEntry->setInitializer(ConstantArray::get((ArrayType*) globalEntry->getValueType(), entryConstants));
-    globalEntry->setSection(GLOBALS_INTROSPECTION_SECTION_NAME);
-
+    std::vector<Constant *> entryConstants = getGlobalEntryConstants(M, staticLibGlobalEntryVar, staticLibStructDefEntry, staticLibStructFieldEntry, modUniqueName);
     numEntries = entryConstants.size();
 
-    return globalEntry;
+    if(numEntries > 0) {
+      GlobalVariable* globalEntry = new GlobalVariable(M,
+        ArrayType::get(staticLibGlobalEntryVar->getValueType(), entryConstants.size()),
+        true,
+        GlobalValue::LinkageTypes::ExternalLinkage,
+        nullptr,
+        Twine("__introspection_mod_entries.").concat(modUniqueName)
+      );
+
+      globalEntry->setAlignment(MaybeAlign(staticLibGlobalEntryVar->getAlignment()));
+      globalEntry->setInitializer(ConstantArray::get((ArrayType*) globalEntry->getValueType(), entryConstants));
+      globalEntry->setSection(GLOBALS_INTROSPECTION_SECTION_NAME);
+
+      return globalEntry;
+    } else {
+      return nullptr;
+    }
   }
 
   /**
@@ -310,13 +436,17 @@ struct GlobalsIntrospectionPass : public ModulePass {
   GlobalVariable *createStringConst(Module &module, const Twine &name, StringRef str) {
     Constant* strData = ConstantDataArray::getString(module.getContext(), str);
 
-    return new GlobalVariable(module,
+    GlobalVariable* toRet = new GlobalVariable(module,
       strData->getType(),
       true,
       GlobalValue::LinkageTypes::PrivateLinkage,
       strData,
       Twine(".str.isdata.").concat(name)
     );
+
+    toRet->setSection(GLOBALS_INTROSPECTION_STR_SECTION_NAME);
+
+    return toRet;
   }
 
   /**

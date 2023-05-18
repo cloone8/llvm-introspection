@@ -10,7 +10,7 @@
 struct isdata_entry entries = {
     .name_len = 0,
     .name = NULL,
-    .size = 0,
+    .size_or_def = 0,
     .flags = 0,
     .addr = NULL
 };
@@ -23,6 +23,10 @@ struct isdata_module module = {
     .num_entries = 0,
     .entries = &entries
 };
+
+struct isdata_structdef structdef = {0};
+
+struct isdata_structfield structfield = {0};
 
 void __peekfs_module_registrator(const char* path, const void* hdr)  {
 #ifdef __linux__
