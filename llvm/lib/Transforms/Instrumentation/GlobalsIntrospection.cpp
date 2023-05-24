@@ -1,11 +1,13 @@
 #include <unordered_map>
 
+#include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/Transforms/Instrumentation/GlobalsIntrospection.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Pass.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Constants.h"
@@ -37,11 +39,13 @@ struct GlobalsIntrospectionPass : public ModulePass {
   }
 
   bool runOnModule(Module &M) override {
+    resetClassMembers();
 
     std::string staticLibPath = getStaticLibPath();
 
     if(staticLibPath.empty()) {
       WithColor::warning(errs()).resetColor() << "could not find introspection library, so metadata will not be included\n";
+      resetClassMembers();
       return false;
     }
 
@@ -54,55 +58,109 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     getRandomAsciiIdentifier(random_id, 10);
 
-    Twine modUniqueName = Twine(M.getName()).concat(Twine(random_id));
+    targetModule = &M;
+
+    modUniqueName = Twine(M.getName()).concat(Twine(random_id)).str();
+
+    if((staticLibGlobalEntryVar = staticLib->getNamedGlobal("entries")) == nullptr) {
+      WithColor::warning(errs()).resetColor() << "could not find entries variable, so introspection metadata will not be included\n";
+      resetClassMembers();
+      return false;
+    }
+
+    if((staticLibStructDefEntry = staticLib->getNamedGlobal("structdef")) == nullptr) {
+      WithColor::warning(errs()).resetColor() << "could not find structdef variable, so introspection metadata will not be included\n";
+      resetClassMembers();
+      return false;
+    }
+
+    if((staticLibStructFieldEntry = staticLib->getNamedGlobal("structfield")) == nullptr) {
+      WithColor::warning(errs()).resetColor() << "could not find structfield variable, so introspection metadata will not be included\n";
+      resetClassMembers();
+      return false;
+    }
+
+    if((staticLibModEntryVar = staticLib->getNamedGlobal("module")) == nullptr) {
+      WithColor::warning(errs()).resetColor() << "could not find module variable, so introspection metadata will not be included\n";
+      resetClassMembers();
+      return false;
+    }
+
+    finder.processModule(M);
 
     size_t numEntries;
-    GlobalVariable* moduleEntries = createModuleEntries(M, modUniqueName, staticLib.get(), numEntries);
+    GlobalVariable* moduleEntries = createModuleEntries(staticLib.get(), numEntries);
 
     if(numEntries == 0) {
+      resetClassMembers();
       return false; // No globals to introspect!
     }
 
-    Function* registratorFunction = copyRegistratorFunction(staticLib.get(), M);
+    Function* registratorFunction = copyRegistratorFunction(staticLib.get());
 
     if(registratorFunction == nullptr) {
       WithColor::warning(errs()).resetColor() << "registrator function was not succesfully copied\n";
+      resetClassMembers();
       return true;
     }
 
     registratorFunction->setLinkage(GlobalValue::LinkageTypes::LinkOnceAnyLinkage);
 
-    GlobalVariable* moduleHeader = createModuleHeader(M, modUniqueName, staticLib.get(), moduleEntries, numEntries);
+    GlobalVariable* moduleHeader = createModuleHeader(moduleEntries, numEntries);
 
-    GlobalVariable* registerFile = createStringConst(M, "register_file", PEEKFS_REGISTER_FILE);
-    GlobalVariable* unregisterFile = createStringConst(M, "unregister_file", PEEKFS_UNREGISTER_FILE);
+    GlobalVariable* registerFile = createStringConst("register_file", PEEKFS_REGISTER_FILE);
+    GlobalVariable* unregisterFile = createStringConst("unregister_file", PEEKFS_UNREGISTER_FILE);
 
 
-    Function* peekfsCtor = getPeekfsInitFunction(M, Twine("__peekfs_init.").concat(modUniqueName), registerFile, moduleHeader, registratorFunction);
-    Function* peekfsDtor = getPeekfsInitFunction(M, Twine("__peekfs_exit.").concat(modUniqueName), unregisterFile, moduleHeader, registratorFunction);
+    Function* peekfsCtor = getPeekfsInitFunction(Twine("__peekfs_init.").concat(modUniqueName), registerFile, moduleHeader, registratorFunction);
+    Function* peekfsDtor = getPeekfsInitFunction(Twine("__peekfs_exit.").concat(modUniqueName), unregisterFile, moduleHeader, registratorFunction);
 
     appendToGlobalCtors(M, peekfsCtor, 0);
     appendToGlobalDtors(M, peekfsDtor, 0);
+
+    resetClassMembers();
 
     return true;
   }
 
   private:
+  Module* targetModule;
+  DebugInfoFinder finder;
+  std::unordered_map<StructType*, std::pair<GlobalVariable*, bool>> structDefMap;
+  std::string modUniqueName;
+  GlobalVariable* staticLibGlobalEntryVar;
+  GlobalVariable* staticLibStructDefEntry;
+  GlobalVariable* staticLibStructFieldEntry;
+  GlobalVariable* staticLibModEntryVar;
 
-  Function* getPeekfsInitFunction(Module &M, Twine name, GlobalVariable* initFile, GlobalVariable* modHeader, Function* registratorFunction) {
+  void resetClassMembers() {
+    structDefMap = std::unordered_map<StructType*, std::pair<GlobalVariable*, bool>>();
+    modUniqueName = std::string();
+    staticLibGlobalEntryVar = nullptr;
+    staticLibStructDefEntry = nullptr;
+    staticLibStructFieldEntry = nullptr;
+    staticLibModEntryVar = nullptr;
+    targetModule = nullptr;
+  }
+
+  LLVMContext& getCtx() {
+    return targetModule->getContext();
+  }
+
+  Function* getPeekfsInitFunction(Twine name, GlobalVariable* initFile, GlobalVariable* modHeader, Function* registratorFunction) {
     Function* introspectionConstructor = Function::createWithDefaultAttr(
-      FunctionType::get(Type::getVoidTy(M.getContext()), false),
+      FunctionType::get(Type::getVoidTy(getCtx()), false),
       GlobalValue::LinkageTypes::ExternalLinkage,
-      M.getDataLayout().getProgramAddressSpace(),
+      targetModule->getDataLayout().getProgramAddressSpace(),
       name,
-      &M
+      targetModule
     );
 
     introspectionConstructor->addFnAttr(Attribute::NoUnwind);
     introspectionConstructor->addFnAttr(Attribute::OptimizeNone);
     introspectionConstructor->addFnAttr(Attribute::NoInline);
 
-    IRBuilder<> *Builder = new IRBuilder<>(BasicBlock::Create(M.getContext(), "entry", introspectionConstructor));
+    IRBuilder<> *Builder = new IRBuilder<>(BasicBlock::Create(getCtx(), "entry", introspectionConstructor));
     std::vector<Value *> args;
     args.push_back(initFile);
     args.push_back(modHeader);
@@ -113,7 +171,7 @@ struct GlobalsIntrospectionPass : public ModulePass {
     return introspectionConstructor;
   }
 
-  Function* copyRegistratorFunction(Module* staticLib, Module &M) {
+  Function* copyRegistratorFunction(Module* staticLib) {
     ValueToValueMapTy VMap;
     std::vector<Function*> toCopy;
 
@@ -138,7 +196,7 @@ struct GlobalsIntrospectionPass : public ModulePass {
           staticLibFunc.getLinkage(),
           staticLibFunc.getAddressSpace(),
           staticLibFunc.getName(),
-          &M
+          targetModule
         );
 
       VMap[&staticLibFunc] = newFunction;
@@ -159,7 +217,7 @@ struct GlobalsIntrospectionPass : public ModulePass {
                         Returns);
     }
 
-    return M.getFunction("__peekfs_module_registrator");
+    return targetModule->getFunction("__peekfs_module_registrator");
   }
 
   /**
@@ -186,16 +244,28 @@ struct GlobalsIntrospectionPass : public ModulePass {
     }
   }
 
-  GlobalVariable* getStructDefForType(Module &M, std::unordered_map<StructType*, GlobalVariable*> &structDefMap, StructType* structType, GlobalVariable* staticLibStructDef, GlobalVariable* staticLibStructField, Twine &modUniqueName) {
-    GlobalVariable* cachedStructDef = structDefMap[structType];
+  GlobalVariable* getStructDefForType(StructType* structType, DICompositeType* structDbgInfo) {
+    std::pair<GlobalVariable*, bool> cachedStructDefPair = structDefMap[structType];
+    GlobalVariable* cachedStructDef = cachedStructDefPair.first;
 
     if(cachedStructDef) {
       return cachedStructDef;
     }
 
+    bool haveDebugInfo = false;
+    std::vector<DIDerivedType*> dbgMembers = std::vector<DIDerivedType*>();
+
+    if(structDbgInfo) {
+      if(getMembersFromComposite(structDbgInfo, dbgMembers, structType->elements().size())) {
+        haveDebugInfo = true;
+      }
+    }
+
     std::string structName;
 
-    if(!structType->isLiteral()) {
+    if(haveDebugInfo && !structDbgInfo->getName().empty()) {
+      structName = structDbgInfo->getName().str();
+    } else if(!structType->isLiteral()) {
       structName = structType->getName().str();
     } else {
       char structUniqueID[10] = {0};
@@ -206,8 +276,17 @@ struct GlobalsIntrospectionPass : public ModulePass {
     std::vector<Constant*> structFieldInitializers = std::vector<Constant *>();
     uint64_t elementNum = 0;
     for(Type* structElement : structType->elements()) {
+      DIDerivedType* memberDbg = haveDebugInfo ? dbgMembers[elementNum] : nullptr;
+
+      std::string fieldDisplayName;
+
+      if(haveDebugInfo && !memberDbg->getName().empty()) {
+        fieldDisplayName = memberDbg->getName().str();
+      } else {
+        fieldDisplayName = Twine("@unknown_field_").concat(Twine(elementNum)).str();
+      }
+
       Type* elemType = structElement;
-      Twine fieldDisplayName = Twine("field_").concat(Twine(elementNum++));
       Twine fieldMetaName = Twine(structName).concat(Twine('.')).concat(fieldDisplayName);
       uint8_t flags = 0;
       uint64_t numElems = 1;
@@ -220,45 +299,60 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
       if(elemType->isStructTy()) {
         flags |= ISDATA_SFFLAG_STRUCT;
-        sizeOrDefInit = ConstantExpr::getPtrToInt(getStructDefForType(M, structDefMap, (StructType*) elemType, staticLibStructDef, staticLibStructField, modUniqueName), Type::getInt64Ty(M.getContext()));
+        DICompositeType* nestedStructDbg = nullptr;
+
+        if(haveDebugInfo && DICompositeType::classof(memberDbg->getBaseType())) {
+          DICompositeType* maybeDbg = (DICompositeType*) memberDbg->getBaseType();
+
+          if(numElems > 1) {
+            if(maybeDbg->getBaseType() && DICompositeType::classof(maybeDbg->getBaseType())) {
+              nestedStructDbg = (DICompositeType*) maybeDbg->getBaseType();
+            }
+          } else {
+            nestedStructDbg = maybeDbg;
+          }
+        }
+
+        sizeOrDefInit = ConstantExpr::getPtrToInt(getStructDefForType((StructType*) elemType, nestedStructDbg), Type::getInt64Ty(getCtx()));
       } else {
-        sizeOrDefInit = ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, M.getDataLayout().getTypeAllocSize(elemType).getFixedSize(), false));
+        sizeOrDefInit = ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, targetModule->getDataLayout().getTypeAllocSize(elemType).getFixedSize(), false));
       }
 
       std::vector<Constant *> isdataStructFieldFields = {
-        ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, fieldDisplayName.str().length() + 1, false)),
-        createStringConst(M, fieldMetaName.concat(Twine(".name")), fieldDisplayName.str()),
-        ConstantInt::get(Type::getInt8Ty(M.getContext()), APInt(8, flags, false)),
+        ConstantInt::get(Type::getInt16Ty(getCtx()), APInt(16, fieldDisplayName.length() + 1, false)),
+        createStringConst(fieldMetaName.concat(Twine(".name")), fieldDisplayName),
+        ConstantInt::get(Type::getInt8Ty(getCtx()), APInt(8, flags, false)),
         sizeOrDefInit,
-        ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, numElems, false)),
+        ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, numElems, false)),
       };
 
-      Constant* isdataStructField = ConstantStruct::get((StructType*)staticLibStructField->getValueType(), ArrayRef<Constant*>(isdataStructFieldFields));
+      Constant* isdataStructField = ConstantStruct::get((StructType*)staticLibStructFieldEntry->getValueType(), ArrayRef<Constant*>(isdataStructFieldFields));
 
       structFieldInitializers.push_back(isdataStructField);
+      elementNum++;
     }
 
-    GlobalVariable* structFields = new GlobalVariable(M,
-        ArrayType::get(staticLibStructField->getValueType(), structFieldInitializers.size()),
+    GlobalVariable* structFields = new GlobalVariable(*targetModule,
+        ArrayType::get(staticLibStructFieldEntry->getValueType(), structFieldInitializers.size()),
         true,
         GlobalValue::LinkageTypes::ExternalLinkage,
         nullptr,
         Twine(structName).concat(Twine(".structfields.")).concat(modUniqueName)
       );
 
-    structFields->setAlignment(MaybeAlign(staticLibStructField->getAlignment()));
+    structFields->setAlignment(MaybeAlign(staticLibStructFieldEntry->getAlignment()));
     structFields->setInitializer(ConstantArray::get((ArrayType*) structFields->getValueType(), structFieldInitializers));
     structFields->setSection(GLOBALS_INTROSPECTION_SECTION_NAME);
 
-    GlobalVariable* structDef = new GlobalVariable(M,
-      staticLibStructDef->getValueType(),
+    GlobalVariable* structDef = new GlobalVariable(*targetModule,
+      staticLibStructDefEntry->getValueType(),
       true,
       GlobalValue::LinkageTypes::ExternalLinkage,
       nullptr,
       Twine(structName).concat(Twine(".structdef.")).concat(modUniqueName)
     );
 
-    structDef->setAlignment(MaybeAlign(staticLibStructDef->getAlignment()));
+    structDef->setAlignment(MaybeAlign(staticLibStructDefEntry->getAlignment()));
     structDef->setSection(GLOBALS_INTROSPECTION_SECTION_NAME);
 
     uint8_t flags = 0;
@@ -268,17 +362,17 @@ struct GlobalsIntrospectionPass : public ModulePass {
     }
 
     std::vector<Constant *> initializers = {
-      ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, structFieldInitializers.size(), false)),
+      ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, structFieldInitializers.size(), false)),
       structFields,
-      ConstantInt::get(Type::getInt8Ty(M.getContext()), APInt(8, flags, false))
+      ConstantInt::get(Type::getInt8Ty(getCtx()), APInt(8, flags, false))
     };
 
     Constant* structDefInit = ConstantStruct::get((StructType*)structDef->getValueType(), initializers);
 
     structDef->setInitializer(structDefInit);
 
+    structDefMap[structType] = std::pair<GlobalVariable*, bool>(structDef, haveDebugInfo);
 
-    structDefMap[structType] = structDef;
     return structDef;
   }
 
@@ -291,11 +385,10 @@ struct GlobalsIntrospectionPass : public ModulePass {
    *
    * @return A std::vector containing initializers for each global entry
    */
-  std::vector<Constant *> getGlobalEntryConstants(Module &M, GlobalVariable* staticLibEntry, GlobalVariable* staticLibStructDef, GlobalVariable* staticLibStructField, Twine &modUniqueName) {
+  std::vector<Constant *> getGlobalEntryConstants() {
     std::vector<Constant *> constantMap = std::vector<Constant *>();
-    std::unordered_map<StructType*, GlobalVariable*> structDefMap = std::unordered_map<StructType*, GlobalVariable*>();
 
-    for(auto &global : M.getGlobalList()) {
+    for(auto &global : targetModule->getGlobalList()) {
       if(global.getName().startswith("llvm.")) {
         continue;
       }
@@ -325,26 +418,82 @@ struct GlobalsIntrospectionPass : public ModulePass {
       if(elemType->isStructTy()) {
         flags |= ISDATA_EFLAG_STRUCT;
 
-        sizeOrDefInit = ConstantExpr::getPtrToInt(getStructDefForType(M, structDefMap, (StructType*) elemType, staticLibStructDef, staticLibStructField, modUniqueName), Type::getInt64Ty(M.getContext()));
+        DICompositeType* structDbgInfo = nullptr;
+        SmallVector<DIGlobalVariableExpression *, 1> gvExpressions;
+
+        global.getDebugInfo(gvExpressions);
+
+        for(DIGlobalVariableExpression* gvExpr : gvExpressions) {
+          DICompositeType* debugInfoFromExpr = getStructDbgInfoFromGV(gvExpr, numElems > 1);
+
+          if(debugInfoFromExpr) {
+            structDbgInfo = debugInfoFromExpr;
+            break;
+          }
+        }
+
+        sizeOrDefInit = ConstantExpr::getPtrToInt(getStructDefForType((StructType*) elemType, structDbgInfo), Type::getInt64Ty(getCtx()));
       } else {
-        sizeOrDefInit = ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, M.getDataLayout().getTypeAllocSize(elemType).getFixedSize(), false));
+        sizeOrDefInit = ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, targetModule->getDataLayout().getTypeAllocSize(elemType).getFixedSize(), false));
       }
 
       std::vector<Constant *> entryInitializers = {
-        ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, global.getName().size() + 1, false)),
-        createStringConst(M, "__introspection_entry_name", global.getName()),
-        ConstantInt::get(Type::getInt32Ty(M.getContext()), APInt(32, flags, false)),
+        ConstantInt::get(Type::getInt16Ty(getCtx()), APInt(16, global.getName().size() + 1, false)),
+        createStringConst("__introspection_entry_name", global.getName()),
+        ConstantInt::get(Type::getInt32Ty(getCtx()), APInt(32, flags, false)),
         sizeOrDefInit,
-        ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, numElems, false)),
+        ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, numElems, false)),
         &global
       };
 
-      Constant* entryInitializer = ConstantStruct::get((StructType*)staticLibEntry->getValueType(), ArrayRef<Constant*>(entryInitializers));
+      Constant* entryInitializer = ConstantStruct::get((StructType*)staticLibGlobalEntryVar->getValueType(), ArrayRef<Constant*>(entryInitializers));
 
       constantMap.push_back(entryInitializer);
     }
 
     return constantMap;
+  }
+
+  DICompositeType* getStructDbgInfoFromGV(DIGlobalVariableExpression* gvExpr, bool isArray) {
+    bool hasType = gvExpr->getVariable() &&
+                   gvExpr->getVariable()->getType() &&
+                   DICompositeType::classof(gvExpr->getVariable()->getType());
+
+    if(hasType) {
+      DICompositeType* maybeDbg = (DICompositeType*) gvExpr->getVariable()->getType();
+
+      if(isArray) {
+        if(maybeDbg->getBaseType() && DICompositeType::classof(maybeDbg->getBaseType())) {
+          return (DICompositeType*) maybeDbg->getBaseType();
+        }
+      } else {
+        return maybeDbg;
+      }
+    }
+
+    return nullptr;
+  }
+
+  bool getMembersFromComposite(DICompositeType* comp, std::vector<DIDerivedType*> &members, unsigned int expected_length) {
+    if(comp->getElements().size() != expected_length) {
+      return false;
+    }
+
+    for(DINode* member : comp->getElements()) {
+      if(!DIDerivedType::classof(member)) {
+        return false;
+      }
+
+      DIDerivedType* asDerived = (DIDerivedType*) member;
+
+      if(asDerived->getBaseType() == nullptr) {
+        return false;
+      }
+
+      members.push_back(asDerived);
+    }
+
+    return true;
   }
 
   /**
@@ -358,16 +507,12 @@ struct GlobalsIntrospectionPass : public ModulePass {
    *
    * @return The created global array
    */
-  GlobalVariable *createModuleEntries(Module &M, Twine &modUniqueName, Module *staticLib, size_t &numEntries) {
-    GlobalVariable* staticLibGlobalEntryVar = staticLib->getNamedGlobal("entries");
-    GlobalVariable* staticLibStructDefEntry = staticLib->getNamedGlobal("structdef");
-    GlobalVariable* staticLibStructFieldEntry = staticLib->getNamedGlobal("structfield");
-
-    std::vector<Constant *> entryConstants = getGlobalEntryConstants(M, staticLibGlobalEntryVar, staticLibStructDefEntry, staticLibStructFieldEntry, modUniqueName);
+  GlobalVariable *createModuleEntries(Module *staticLib, size_t &numEntries) {
+    std::vector<Constant *> entryConstants = getGlobalEntryConstants();
     numEntries = entryConstants.size();
 
     if(numEntries > 0) {
-      GlobalVariable* globalEntry = new GlobalVariable(M,
+      GlobalVariable* globalEntry = new GlobalVariable(*targetModule,
         ArrayType::get(staticLibGlobalEntryVar->getValueType(), entryConstants.size()),
         true,
         GlobalValue::LinkageTypes::ExternalLinkage,
@@ -396,10 +541,8 @@ struct GlobalsIntrospectionPass : public ModulePass {
    * @param moduleEntries The global referencing the array of entries
    * @param numEntries The amount of entries in the global array
    */
-  GlobalVariable *createModuleHeader(Module &M, Twine &modUniqueName, Module *staticLib, GlobalVariable* moduleEntries, size_t numEntries) {
-    GlobalVariable* staticLibModEntryVar = staticLib->getNamedGlobal("module");
-
-    GlobalVariable* moduleEntry = new GlobalVariable(M,
+  GlobalVariable *createModuleHeader(GlobalVariable* moduleEntries, size_t numEntries) {
+    GlobalVariable* moduleEntry = new GlobalVariable(*targetModule,
       staticLibModEntryVar->getValueType(),
       true,
       GlobalValue::LinkageTypes::ExternalLinkage,
@@ -414,14 +557,14 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     assert(magic_bytes_vec.size() == ISDATA_MAGIC_BYTES_LEN);
 
-    Constant *magic_init = ConstantDataArray::get(M.getContext(), ArrayRef<uint8_t>(magic_bytes_vec));
+    Constant *magic_init = ConstantDataArray::get(getCtx(), ArrayRef<uint8_t>(magic_bytes_vec));
 
     std::vector<Constant *> initializers = {
       magic_init,
-      ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, ISDATA_VERSION, false)),
-      ConstantInt::get(Type::getInt16Ty(M.getContext()), APInt(16, M.getName().size() + 1, false)),
-      createStringConst(M, "__introspection_mod_name", M.getName()),
-      ConstantInt::get(Type::getInt64Ty(M.getContext()), APInt(64, numEntries, false)),
+      ConstantInt::get(Type::getInt16Ty(getCtx()), APInt(16, ISDATA_VERSION, false)),
+      ConstantInt::get(Type::getInt16Ty(getCtx()), APInt(16, targetModule->getName().size() + 1, false)),
+      createStringConst("__introspection_mod_name", targetModule->getName()),
+      ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, numEntries, false)),
       moduleEntries,
     };
 
@@ -433,10 +576,10 @@ struct GlobalsIntrospectionPass : public ModulePass {
     return moduleEntry;
   }
 
-  GlobalVariable *createStringConst(Module &module, const Twine &name, StringRef str) {
-    Constant* strData = ConstantDataArray::getString(module.getContext(), str);
+  GlobalVariable *createStringConst(const Twine &name, StringRef str) {
+    Constant* strData = ConstantDataArray::getString(getCtx(), str);
 
-    GlobalVariable* toRet = new GlobalVariable(module,
+    GlobalVariable* toRet = new GlobalVariable(*targetModule,
       strData->getType(),
       true,
       GlobalValue::LinkageTypes::PrivateLinkage,

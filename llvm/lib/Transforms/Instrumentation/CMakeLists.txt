@@ -28,6 +28,7 @@ add_llvm_component_library(LLVMInstrumentation
 
   LINK_COMPONENTS
   Analysis
+  BinaryFormat
   Core
   Demangle
   MC
