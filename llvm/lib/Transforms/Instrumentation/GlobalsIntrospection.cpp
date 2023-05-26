@@ -261,6 +261,8 @@ struct GlobalsIntrospectionPass : public ModulePass {
       }
     }
 
+    const StructLayout* layout = targetModule->getDataLayout().getStructLayout(structType);
+
     std::string structName;
 
     if(haveDebugInfo && !structDbgInfo->getName().empty()) {
@@ -290,6 +292,7 @@ struct GlobalsIntrospectionPass : public ModulePass {
       Twine fieldMetaName = Twine(structName).concat(Twine('.')).concat(fieldDisplayName);
       uint8_t flags = 0;
       uint64_t numElems = 1;
+      uint64_t offset = layout->getElementOffsetInBits(elementNum);
       Constant* sizeOrDefInit;
 
       if(structElement->isArrayTy()) {
@@ -319,9 +322,10 @@ struct GlobalsIntrospectionPass : public ModulePass {
       }
 
       std::vector<Constant *> isdataStructFieldFields = {
+        ConstantInt::get(Type::getInt8Ty(getCtx()), APInt(8, flags, false)),
         ConstantInt::get(Type::getInt16Ty(getCtx()), APInt(16, fieldDisplayName.length() + 1, false)),
         createStringConst(fieldMetaName.concat(Twine(".name")), fieldDisplayName),
-        ConstantInt::get(Type::getInt8Ty(getCtx()), APInt(8, flags, false)),
+        ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, offset, false)),
         sizeOrDefInit,
         ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, numElems, false)),
       };
@@ -362,9 +366,10 @@ struct GlobalsIntrospectionPass : public ModulePass {
     }
 
     std::vector<Constant *> initializers = {
+      ConstantInt::get(Type::getInt8Ty(getCtx()), APInt(8, flags, false)),
+      ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, layout->getSizeInBytes(), false)),
       ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, structFieldInitializers.size(), false)),
-      structFields,
-      ConstantInt::get(Type::getInt8Ty(getCtx()), APInt(8, flags, false))
+      structFields
     };
 
     Constant* structDefInit = ConstantStruct::get((StructType*)structDef->getValueType(), initializers);
@@ -439,11 +444,11 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
       std::vector<Constant *> entryInitializers = {
         ConstantInt::get(Type::getInt16Ty(getCtx()), APInt(16, global.getName().size() + 1, false)),
-        createStringConst("__introspection_entry_name", global.getName()),
         ConstantInt::get(Type::getInt32Ty(getCtx()), APInt(32, flags, false)),
+        createStringConst("__introspection_entry_name", global.getName()),
+        &global,
         sizeOrDefInit,
-        ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, numElems, false)),
-        &global
+        ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, numElems, false))
       };
 
       Constant* entryInitializer = ConstantStruct::get((StructType*)staticLibGlobalEntryVar->getValueType(), ArrayRef<Constant*>(entryInitializers));
