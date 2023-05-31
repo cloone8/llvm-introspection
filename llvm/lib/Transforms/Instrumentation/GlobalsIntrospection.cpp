@@ -177,6 +177,13 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     // First, copy all the declarations to the new module
     for(auto &staticLibFunc : staticLib->getFunctionList()) {
+      Function* existingFunc = targetModule->getFunction(staticLibFunc.getName());
+
+      if(existingFunc != nullptr) {
+        VMap[&staticLibFunc] = existingFunc;
+        continue;
+      }
+
       toCopy.push_back(&staticLibFunc);
 
       std::vector<Type *> argTypes;
@@ -318,7 +325,7 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
         sizeOrDefInit = ConstantExpr::getPtrToInt(getStructDefForType((StructType*) elemType, nestedStructDbg), Type::getInt64Ty(getCtx()));
       } else {
-        sizeOrDefInit = ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, targetModule->getDataLayout().getTypeAllocSize(elemType).getFixedSize(), false));
+        sizeOrDefInit = ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, targetModule->getDataLayout().getTypeAllocSize(elemType).getFixedSize() * 8, false));
       }
 
       std::vector<Constant *> isdataStructFieldFields = {
