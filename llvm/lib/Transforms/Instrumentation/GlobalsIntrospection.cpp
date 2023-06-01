@@ -292,11 +292,12 @@ struct GlobalsIntrospectionPass : public ModulePass {
       if(haveDebugInfo && !memberDbg->getName().empty()) {
         fieldDisplayName = memberDbg->getName().str();
       } else {
-        fieldDisplayName = Twine("@unknown_field_").concat(Twine(elementNum)).str();
+        std::string elementNumString = std::to_string(elementNum);
+        fieldDisplayName = Twine("@unknown_field_").concat(elementNumString).str();
       }
 
       Type* elemType = structElement;
-      Twine fieldMetaName = Twine(structName).concat(Twine('.')).concat(fieldDisplayName);
+      std::string fieldMetaName = Twine(structName).concat(".").concat(fieldDisplayName).str();
       uint8_t flags = 0;
       uint64_t numElems = 1;
       uint64_t offset = layout->getElementOffsetInBits(elementNum);
@@ -331,7 +332,7 @@ struct GlobalsIntrospectionPass : public ModulePass {
       std::vector<Constant *> isdataStructFieldFields = {
         ConstantInt::get(Type::getInt8Ty(getCtx()), APInt(8, flags, false)),
         ConstantInt::get(Type::getInt16Ty(getCtx()), APInt(16, fieldDisplayName.length() + 1, false)),
-        createStringConst(fieldMetaName.concat(Twine(".name")), fieldDisplayName),
+        createStringConst(Twine(fieldMetaName).concat(Twine(".name")), fieldDisplayName),
         ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, offset, false)),
         sizeOrDefInit,
         ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, numElems, false)),
@@ -384,7 +385,6 @@ struct GlobalsIntrospectionPass : public ModulePass {
     structDef->setInitializer(structDefInit);
 
     structDefMap[structType] = std::pair<GlobalVariable*, bool>(structDef, haveDebugInfo);
-
     return structDef;
   }
 
