@@ -402,6 +402,10 @@ public:
   /// passed on the command line.
   std::string StackUsageOutput;
 
+  // Global introspection CLI options.
+  bool EnableGlobalsIntrospection;
+  std::string GlobalsIntrospectionRoot;
+
   /// Executable and command-line used to create a given CompilerInvocation.
   /// Most of the time this will be the full -cc1 command.
   const char *Argv0 = nullptr;

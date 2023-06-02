@@ -582,7 +582,7 @@ void PassManagerBuilder::populateModulePassManager(
   MPM.add(createForceFunctionAttrsLegacyPass());
 
   // Introspection passes
-  MPM.add(createGlobalsIntrospectionPass());
+  MPM.add(createGlobalsIntrospectionPass(std::string()));
 
   // If all optimizations are disabled, just run the always-inline pass and,
   // if enabled, the function merging pass.

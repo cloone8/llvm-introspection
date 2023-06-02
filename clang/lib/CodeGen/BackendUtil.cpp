@@ -566,7 +566,9 @@ bool EmitAssemblyHelper::AddEmitPasses(legacy::PassManager &CodeGenPasses,
                                        BackendAction Action,
                                        raw_pwrite_stream &OS,
                                        raw_pwrite_stream *DwoOS) {
-  CodeGenPasses.add(createGlobalsIntrospectionPass());
+  if(CodeGenOpts.EnableGlobalsIntrospection) {
+    CodeGenPasses.add(createGlobalsIntrospectionPass(CodeGenOpts.GlobalsIntrospectionRoot));
+  }
 
   // Add LibraryInfo.
   std::unique_ptr<TargetLibraryInfoImpl> TLII(

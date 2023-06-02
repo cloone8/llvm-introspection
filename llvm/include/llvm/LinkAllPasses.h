@@ -106,7 +106,7 @@ namespace {
       (void) llvm::createGlobalDCEPass();
       (void) llvm::createGlobalOptimizerPass();
       (void) llvm::createGlobalsAAWrapperPass();
-      (void) llvm::createGlobalsIntrospectionPass();
+      (void) llvm::createGlobalsIntrospectionPass(std::string());
       (void) llvm::createGuardWideningPass();
       (void) llvm::createLoopGuardWideningPass();
       (void) llvm::createIPSCCPPass();

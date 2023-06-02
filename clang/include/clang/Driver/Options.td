@@ -5295,8 +5295,18 @@ def fno_use_ctor_homing: Flag<["-"], "fno-use-ctor-homing">,
     HelpText<"Don't use constructor homing for debug info">;
 def fuse_ctor_homing: Flag<["-"], "fuse-ctor-homing">,
     HelpText<"Use constructor homing if we are using limited debug info already">;
-
 } // let Flags = [CC1Option, CC1AsOption, NoDriverOption]
+
+defm global_introspection : BoolFOption<"global-introspection",
+  CodeGenOpts<"EnableGlobalsIntrospection">, DefaultTrue,
+  NegFlag<SetFalse, [CC1Option], "Disable">,
+  PosFlag<SetTrue, [CC1Option], "[Default] Enable">,
+  BothFlags<[CC1Option], " global introspection">>;
+
+def global_introspection_root: Joined<["-", "--"], "global-introspection-root=">,
+  Group<f_Group>, Flags<[CC1Option]>,
+  HelpText<"Set the global introspection prefix">,
+  MarshallingInfoString<CodeGenOpts<"GlobalsIntrospectionRoot">>;
 
 let Flags = [CC1Option, NoDriverOption] in {
 

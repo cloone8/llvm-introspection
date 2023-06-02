@@ -13,7 +13,7 @@
 namespace llvm {
     class ModulePass;
 
-    ModulePass *createGlobalsIntrospectionPass();
+    ModulePass *createGlobalsIntrospectionPass(const std::string &srcRoot);
 }
 
 #endif

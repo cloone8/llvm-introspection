@@ -34,18 +34,35 @@ using namespace llvm;
 namespace {
 struct GlobalsIntrospectionPass : public ModulePass {
   static char ID;
-  GlobalsIntrospectionPass() : ModulePass(ID) {
+  GlobalsIntrospectionPass(const std::string &srcRoot) : ModulePass(ID) {
     initializeGlobalsIntrospectionPassPass(*PassRegistry::getPassRegistry());
+    buildRoot = std::string(srcRoot);
   }
 
+  GlobalsIntrospectionPass() : GlobalsIntrospectionPass(std::string()) {}
+
   bool runOnModule(Module &M) override {
-    resetClassMembers();
+    modPath = getRootlessFullpath(M.getSourceFileName());
+
+    std::string parsedBuildRoot = getRootlessFullpath(buildRoot);
+
+    if(!buildRoot.empty() && parsedBuildRoot.empty()) {
+      WithColor::warning(errs()).resetColor() << "could not resolve global introspection project root to folder, treating as empty\n";
+      buildRoot = std::string();
+    } else {
+      buildRoot = Twine(parsedBuildRoot).concat(Twine(sys::path::get_separator())).str();
+    }
+
+    if(StringRef(modPath).startswith(buildRoot)) {
+      modPath = modPath.substr(buildRoot.size());
+    } else {
+      WithColor::warning(errs()).resetColor() << "module outside of given project root. Using full path instead\n";
+    }
 
     std::string staticLibPath = getStaticLibPath();
 
     if(staticLibPath.empty()) {
       WithColor::warning(errs()).resetColor() << "could not find introspection library, so metadata will not be included\n";
-      resetClassMembers();
       return false;
     }
 
@@ -60,29 +77,25 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     targetModule = &M;
 
-    modUniqueName = Twine(M.getName()).concat(Twine(random_id)).str();
+    modUniqueName = Twine(modPath).concat(Twine(random_id)).str();
 
     if((staticLibGlobalEntryVar = staticLib->getNamedGlobal("entries")) == nullptr) {
       WithColor::warning(errs()).resetColor() << "could not find entries variable, so introspection metadata will not be included\n";
-      resetClassMembers();
       return false;
     }
 
     if((staticLibStructDefEntry = staticLib->getNamedGlobal("structdef")) == nullptr) {
       WithColor::warning(errs()).resetColor() << "could not find structdef variable, so introspection metadata will not be included\n";
-      resetClassMembers();
       return false;
     }
 
     if((staticLibStructFieldEntry = staticLib->getNamedGlobal("structfield")) == nullptr) {
       WithColor::warning(errs()).resetColor() << "could not find structfield variable, so introspection metadata will not be included\n";
-      resetClassMembers();
       return false;
     }
 
     if((staticLibModEntryVar = staticLib->getNamedGlobal("module")) == nullptr) {
       WithColor::warning(errs()).resetColor() << "could not find module variable, so introspection metadata will not be included\n";
-      resetClassMembers();
       return false;
     }
 
@@ -92,7 +105,6 @@ struct GlobalsIntrospectionPass : public ModulePass {
     GlobalVariable* moduleEntries = createModuleEntries(staticLib.get(), numEntries);
 
     if(numEntries == 0) {
-      resetClassMembers();
       return false; // No globals to introspect!
     }
 
@@ -100,7 +112,6 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
     if(registratorFunction == nullptr) {
       WithColor::warning(errs()).resetColor() << "registrator function was not succesfully copied\n";
-      resetClassMembers();
       return true;
     }
 
@@ -117,31 +128,46 @@ struct GlobalsIntrospectionPass : public ModulePass {
     appendToGlobalCtors(M, peekfsCtor, 0);
     appendToGlobalDtors(M, peekfsDtor, 0);
 
-    resetClassMembers();
-
     return true;
   }
 
   private:
   Module* targetModule;
+  std::string buildRoot;
+  std::string modPath;
+  std::string modUniqueName;
   DebugInfoFinder finder;
   std::unordered_map<StructType*, std::pair<GlobalVariable*, bool>> structDefMap;
   std::unordered_map<std::string, GlobalVariable*> stringDefMap;
-  std::string modUniqueName;
   GlobalVariable* staticLibGlobalEntryVar;
   GlobalVariable* staticLibStructDefEntry;
   GlobalVariable* staticLibStructFieldEntry;
   GlobalVariable* staticLibModEntryVar;
 
-  void resetClassMembers() {
-    structDefMap = std::unordered_map<StructType*, std::pair<GlobalVariable*, bool>>();
-    stringDefMap = std::unordered_map<std::string, GlobalVariable*>();
-    modUniqueName = std::string();
-    staticLibGlobalEntryVar = nullptr;
-    staticLibStructDefEntry = nullptr;
-    staticLibStructFieldEntry = nullptr;
-    staticLibModEntryVar = nullptr;
-    targetModule = nullptr;
+  std::string getRootlessFullpath(const std::string &file) {
+    std::string toRet = std::string();
+    SmallString<4096> *ssFullname = new SmallString<4096>(file);
+    SmallString<4096> *resolvedFullname = new SmallString<4096>();
+    StringRef root;
+
+    if(sys::fs::make_absolute(*ssFullname)) {
+      goto out;
+    }
+
+
+    if(sys::fs::real_path(*ssFullname, *resolvedFullname, true)) {
+      goto out;
+    }
+
+    root = sys::path::root_path(*resolvedFullname);
+
+    toRet = std::string(resolvedFullname->substr(root.size()));
+
+out:
+    delete resolvedFullname;
+    delete ssFullname;
+
+    return toRet;
   }
 
   LLVMContext& getCtx() {
@@ -499,8 +525,10 @@ struct GlobalsIntrospectionPass : public ModulePass {
             case dwarf::DW_TAG_structure_type:
               return maybeDbg;
             default:
-              break;
+              return nullptr;
           }
+        } else {
+          return nullptr;
         }
       } else {
         return nullptr;
@@ -598,8 +626,8 @@ struct GlobalsIntrospectionPass : public ModulePass {
     std::vector<Constant *> initializers = {
       magic_init,
       ConstantInt::get(Type::getInt16Ty(getCtx()), APInt(16, ISDATA_VERSION, false)),
-      ConstantInt::get(Type::getInt16Ty(getCtx()), APInt(16, targetModule->getName().size() + 1, false)),
-      createStringConst(targetModule->getName()),
+      ConstantInt::get(Type::getInt16Ty(getCtx()), APInt(16, modPath.size() + 1, false)),
+      createStringConst(modPath),
       ConstantInt::get(Type::getInt64Ty(getCtx()), APInt(64, numEntries, false)),
       moduleEntries,
     };
@@ -680,8 +708,8 @@ struct GlobalsIntrospectionPass : public ModulePass {
 
 char GlobalsIntrospectionPass::ID = 0;
 
-ModulePass *llvm::createGlobalsIntrospectionPass() {
-    return new GlobalsIntrospectionPass();
+ModulePass *llvm::createGlobalsIntrospectionPass(const std::string &srcRoot) {
+    return new GlobalsIntrospectionPass(srcRoot);
 }
 
 INITIALIZE_PASS_BEGIN(GlobalsIntrospectionPass, GLOBALS_INTROSPECTION_PASS_ARG,

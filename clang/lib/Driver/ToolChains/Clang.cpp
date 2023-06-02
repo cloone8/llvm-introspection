@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <iostream>
 #include "Clang.h"
 #include "AMDGPU.h"
 #include "Arch/AArch64.h"
@@ -7233,6 +7234,13 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       D.Diag(diag::err_drv_unsupported_opt_for_target)
           << Str << TC.getTripleString();
     CmdArgs.push_back(Args.MakeArgString(Str));
+  }
+
+  // Flags for introspection passes
+  Args.addOptOutFlag(CmdArgs, options::OPT_fglobal_introspection, options::OPT_fno_global_introspection);
+
+  if (const Arg* A = Args.getLastArg(options::OPT_global_introspection_root)) {
+    CmdArgs.push_back(Args.MakeArgString(Twine("-global-introspection-root=") + A->getValue()));
   }
 
   // Add the output path to the object file for CodeView debug infos.
