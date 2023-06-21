@@ -1,5 +1,6 @@
 #include <unordered_map>
 
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/Transforms/Instrumentation/GlobalsIntrospection.h"
 #include "llvm/Transforms/Utils/Cloning.h"
@@ -16,6 +17,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/MemoryBufferRef.h"
 #include "llvm/Support/RandomNumberGenerator.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/InitializePasses.h"
@@ -647,6 +649,13 @@ out:
       return cachedStr;
     }
 
+    std::string copied(str.str());
+    StringRef copied_ref(copied);
+
+    std::array<uint8_t, 32> strHash = SHA256::hash(ArrayRef<uint8_t>(copied_ref.bytes_begin(), copied_ref.bytes_end()));
+
+    std::string strHashHex = toHex(strHash, true);
+
     Constant* strData = ConstantDataArray::getString(getCtx(), str);
 
     GlobalVariable* toRet = new GlobalVariable(*targetModule,
@@ -654,9 +663,11 @@ out:
       true,
       GlobalValue::LinkageTypes::PrivateLinkage,
       strData,
-      Twine(".str.isdata.").concat(str.substr(0, 32))
+      Twine(".str.isdata.").concat(strHashHex)
     );
 
+    toRet->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+    toRet->setAlignment(Align(1));
     toRet->setSection(GLOBALS_INTROSPECTION_STR_SECTION_NAME);
 
     stringDefMap[str.str()] = toRet;
