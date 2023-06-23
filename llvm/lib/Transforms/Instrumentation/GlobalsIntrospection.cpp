@@ -152,12 +152,11 @@ struct GlobalsIntrospectionPass : public ModulePass {
     SmallString<4096> *resolvedFullname = new SmallString<4096>();
     StringRef root;
 
-    if(sys::fs::make_absolute(*ssFullname)) {
+    if(sys::fs::real_path(*ssFullname, *resolvedFullname, true)) {
       goto out;
     }
 
-
-    if(sys::fs::real_path(*ssFullname, *resolvedFullname, true)) {
+    if(sys::fs::make_absolute(*resolvedFullname)) {
       goto out;
     }
 
@@ -464,6 +463,11 @@ out:
 
       Constant* sizeOrDefInit;
       if(elemType->isStructTy()) {
+
+        if(((StructType*) elemType)->isOpaque()) {
+          continue; // Cannot introspect opaque types
+        }
+
         flags |= ISDATA_EFLAG_STRUCT;
 
         DICompositeType* structDbgInfo = nullptr;
