@@ -15,6 +15,8 @@ Compile the project as normal with at least the Clang subproject enabled. To ens
 the PeekFS compiler pass is properly compiled, we recommend to use Clang to compile
 the project instead of GCC.
 
+Don't forget to init the git submodules!
+
 ## Getting Started with the LLVM System
 
 Taken from [here](https://llvm.org/docs/GettingStarted.html).
