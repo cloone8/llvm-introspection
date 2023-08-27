@@ -9,6 +9,12 @@ For more information on how to contribute to the LLVM project, please
 take a look at the
 [Contributing to LLVM](https://llvm.org/docs/Contributing.html) guide.
 
+# PeekFS Introspection
+
+Compile the project as normal with at least the Clang subproject enabled. To ensure
+the PeekFS compiler pass is properly compiled, we recommend to use Clang to compile
+the project instead of GCC.
+
 ## Getting Started with the LLVM System
 
 Taken from [here](https://llvm.org/docs/GettingStarted.html).
